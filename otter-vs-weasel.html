@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>수달 VS 족제비 — 실시간 AI 판별기</title>
+<meta name="description" content="Teachable Machine 모델로 웹캠 영상을 실시간 분류하는 macOS 포토 부스 스타일 웹사이트." />
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8.5/dist/teachablemachine-image.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", "Segoe UI", sans-serif;
+    background: #f5f5f7;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    color: #1d1d1f;
+  }
+  .window {
+    width: 100%;
+    max-width: 880px;
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    border-radius: 16px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.12);
+    overflow: hidden;
+  }
+  .titlebar {
+    position: relative;
+    display: flex;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  }
+  .dots { display: flex; gap: 8px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot-red { background: #ff5f57; }
+  .dot-yellow { background: #febc2e; }
+  .dot-green { background: #28c840; }
+  .titlebar h1 {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 14px;
+    font-weight: 600;
+    color: rgba(0, 0, 0, 0.75);
+  }
+  .body {
+    display: grid;
+    gap: 16px;
+    padding: 16px;
+    grid-template-columns: 1.6fr 1fr;
+  }
+  @media (max-width: 720px) { .body { grid-template-columns: 1fr; } }
+  .stage {
+    position: relative;
+    aspect-ratio: 4 / 3;
+    background: #000;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .stage canvas { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .placeholder {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; color: #86868b;
+  }
+  .badge {
+    position: absolute; bottom: 12px; left: 12px;
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(12px);
+    border-radius: 999px;
+    padding: 6px 16px;
+    font-size: 14px; font-weight: 600;
+    display: none;
+  }
+  .panel { display: flex; flex-direction: column; gap: 16px; }
+  .label-small { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #86868b; }
+  .top-class { margin-top: 4px; font-size: 30px; font-weight: 700; }
+  .top-conf { font-size: 14px; color: #86868b; }
+  .bars { display: flex; flex-direction: column; gap: 12px; }
+  .bar-row .bar-head { display: flex; justify-content: space-between; font-size: 14px; }
+  .bar-track { margin-top: 4px; height: 8px; border-radius: 999px; background: rgba(0, 0, 0, 0.08); overflow: hidden; }
+  .bar-fill {
+    height: 100%; border-radius: 999px;
+    background: linear-gradient(90deg, #a855f7, #ec4899);
+    transition: width 0.15s ease-out;
+  }
+  .error {
+    background: rgba(255, 59, 48, 0.12);
+    color: #d70015;
+    font-size: 14px;
+    padding: 12px;
+    border-radius: 10px;
+    display: none;
+  }
+  .btn {
+    margin-top: auto;
+    border: none;
+    cursor: pointer;
+    border-radius: 999px;
+    padding: 12px 20px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #fff;
+    background: linear-gradient(90deg, #a855f7, #ec4899);
+    box-shadow: 0 6px 16px rgba(168, 85, 247, 0.35);
+    transition: opacity 0.15s;
+  }
+  .btn:hover { opacity: 0.9; }
+  .btn:disabled { opacity: 0.5; cursor: default; }
+</style>
+</head>
+<body>
+  <div class="window">
+    <div class="titlebar">
+      <div class="dots">
+        <span class="dot dot-red"></span>
+        <span class="dot dot-yellow"></span>
+        <span class="dot dot-green"></span>
+      </div>
+      <h1>수달 VS 족제비</h1>
+    </div>
+    <div class="body">
+      <div class="stage">
+        <video id="video" playsinline muted style="display:none"></video>
+        <canvas id="canvas"></canvas>
+        <div class="placeholder" id="placeholder">카메라가 꺼져 있습니다</div>
+        <div class="badge" id="badge"></div>
+      </div>
+      <div class="panel">
+        <div>
+          <p class="label-small">가장 유력한 결과</p>
+          <p class="top-class" id="topClass">—</p>
+          <p class="top-conf" id="topConf">카메라를 시작하세요</p>
+        </div>
+        <div class="bars" id="bars"></div>
+        <p class="error" id="error" role="alert"></p>
+        <button class="btn" id="btn">카메라 시작</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const MODEL_URL = "https://teachablemachine.withgoogle.com/models/F0ivYBZ0K/";
+
+  const video = document.getElementById("video");
+  const canvas = document.getElementById("canvas");
+  const ctx = canvas.getContext("2d");
+  const placeholder = document.getElementById("placeholder");
+  const badge = document.getElementById("badge");
+  const topClassEl = document.getElementById("topClass");
+  const topConfEl = document.getElementById("topConf");
+  const barsEl = document.getElementById("bars");
+  const errorEl = document.getElementById("error");
+  const btn = document.getElementById("btn");
+
+  let model = null;
+  let stream = null;
+  let rafId = 0;
+  let status = "idle"; // idle | loading | running
+
+  function errMsg(e) {
+    const n = e && e.name;
+    if (n === "NotAllowedError" || n === "SecurityError")
+      return "카메라 권한이 거부되었습니다. 브라우저 주소창의 설정에서 카메라를 허용해 주세요.";
+    if (n === "NotFoundError" || n === "OverconstrainedError")
+      return "사용 가능한 카메라를 찾을 수 없습니다.";
+    if (n === "NotReadableError")
+      return "다른 앱이 카메라를 사용 중입니다.";
+    return "오류가 발생했습니다: " + (e && e.message ? e.message : String(e));
+  }
+
+  function render(preds) {
+    const top = preds.length
+      ? preds.reduce((a, b) => (b.probability > a.probability ? b : a))
+      : null;
+
+    if (top && status === "running") {
+      topClassEl.textContent = top.className;
+      topConfEl.textContent = "신뢰도 " + (top.probability * 100).toFixed(1) + "%";
+      badge.textContent = top.className + " · " + (top.probability * 100).toFixed(0) + "%";
+      badge.style.display = "block";
+    } else {
+      topClassEl.textContent = "—";
+      topConfEl.textContent = "카메라를 시작하세요";
+      badge.style.display = "none";
+    }
+
+    barsEl.innerHTML = "";
+    for (const p of preds) {
+      const row = document.createElement("div");
+      row.className = "bar-row";
+      row.innerHTML =
+        '<div class="bar-head"><span></span><span></span></div>' +
+        '<div class="bar-track"><div class="bar-fill"></div></div>';
+      row.querySelector(".bar-head span:first-child").textContent = p.className;
+      row.querySelector(".bar-head span:last-child").textContent =
+        (p.probability * 100).toFixed(1) + "%";
+      row.querySelector(".bar-fill").style.width = p.probability * 100 + "%";
+      barsEl.appendChild(row);
+    }
+  }
+
+  function stop() {
+    cancelAnimationFrame(rafId);
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    stream = null;
+    video.srcObject = null;
+    status = "idle";
+    placeholder.textContent = "카메라가 꺼져 있습니다";
+    placeholder.style.display = "flex";
+    btn.textContent = "카메라 시작";
+    btn.disabled = false;
+    render([]);
+  }
+
+  async function start() {
+    errorEl.style.display = "none";
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      errorEl.textContent = "이 브라우저는 카메라를 지원하지 않거나 HTTPS가 아닙니다.";
+      errorEl.style.display = "block";
+      return;
+    }
+    status = "loading";
+    btn.textContent = "준비 중…";
+    btn.disabled = true;
+    placeholder.textContent = "모델과 카메라를 불러오는 중…";
+    try {
+      if (!model) {
+        model = await tmImage.load(MODEL_URL + "model.json", MODEL_URL + "metadata.json");
+      }
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: 640, height: 480 },
+        audio: false,
+      });
+      video.srcObject = stream;
+      await video.play();
+      status = "running";
+      placeholder.style.display = "none";
+      btn.textContent = "카메라 중지";
+      btn.disabled = false;
+
+      let last = 0;
+      const loop = async (t) => {
+        if (!stream) return;
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.save();
+        ctx.scale(-1, 1);
+        ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
+        ctx.restore();
+        if (t - last > 150) {
+          last = t;
+          const preds = await model.predict(canvas);
+          if (stream) render(preds);
+        }
+        rafId = requestAnimationFrame(loop);
+      };
+      rafId = requestAnimationFrame(loop);
+    } catch (e) {
+      stop();
+      errorEl.textContent = errMsg(e);
+      errorEl.style.display = "block";
+    }
+  }
+
+  btn.addEventListener("click", () => {
+    if (status === "running") stop();
+    else if (status === "idle") start();
+  });
+
+  window.addEventListener("beforeunload", () => {
+    cancelAnimationFrame(rafId);
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+  });
+</script>
+</body>
+</html>
